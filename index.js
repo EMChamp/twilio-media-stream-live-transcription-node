@@ -8,26 +8,43 @@ const path = require("path");
 
 require("dotenv").config();
 
-//Include Google Speech to Text
-const speech = require("@google-cloud/speech");
-const client = new speech.SpeechClient();
-
-//Configure Transcription Request
-const request = {
-  config: {
-    encoding: "MULAW",
-    sampleRateHertz: 8000,
-    languageCode: "en-GB",
-  },
-  interimResults: true, // If you want interim results, set this to true
-};
+// Imports the Cloud Media Translation client library
+const {
+  SpeechTranslationServiceClient,
+} = require('@google-cloud/media-translation');
+// Creates a client
+const client = new SpeechTranslationServiceClient();
 
 wss.on("connection", function connection(ws) {
   console.log("New Connection Initiated");
 
   let recognizeStream = null;
+  let isFirst = true;
+  let currentTranslation = '';
+  let currentRecognition = '';
 
   ws.on("message", function incoming(message) {
+
+    // Setup GCP Config
+    const encoding = 'mulaw';
+    const sourceLanguage = 'hi-IN';
+    const targetLanguage = 'en-US';
+    const config = {
+      audioConfig: {
+        audioEncoding: encoding,
+        sampleRateHertz: 8000,
+        sourceLanguageCode: sourceLanguage,
+        targetLanguageCode: targetLanguage,
+      },
+      singleUtterance: false,
+    };
+    // First request needs to have only a streaming config, no data.
+    const initialRequest = {
+      streamingConfig: config,
+      audioContent: null,
+    };
+
+    // Parse websocket message
     const msg = JSON.parse(message);
     switch (msg.event) {
       case "connected":
@@ -37,25 +54,45 @@ wss.on("connection", function connection(ws) {
         console.log(`Starting Media Stream ${msg.streamSid}`);
         // Create Stream to the Google Speech to Text API
         recognizeStream = client
-          .streamingRecognize(request)
-          .on("error", console.error)
-          .on("data", (data) => {
-            console.log(data.results[0].alternatives[0].transcript);
-            wss.clients.forEach((client) => {
-              if (client.readyState === WebSocket.OPEN) {
-                client.send(
-                  JSON.stringify({
-                    event: "interim-transcription",
-                    text: data.results[0].alternatives[0].transcript,
-                  })
-                );
+            .streamingTranslateSpeech()
+            .on('error', e => {
+              if (e.code && e.code === 4) {
+                console.log('Streaming translation reached its deadline.');
+              } else {
+                console.log(e);
               }
+            })
+            .on('data', response => {
+              console.log("Data received");
+              const {result, speechEventType} = response;
+           
+              currentTranslation = result.textTranslationResult.translation;
+              currentRecognition = result.recognitionResult;
+              console.log(`\nPartial translation: ${currentTranslation}`);
+              console.log(`Partial recognition result: ${currentRecognition}`);
+
+              wss.clients.forEach((client) => {
+                if (client.readyState === WebSocket.OPEN) {
+                  client.send(
+                    JSON.stringify({
+                      event: "interim-transcription",
+                      text: currentTranslation,
+                    })
+                  );
+                }
+              }); 
             });
-          });
         break;
       case "media":
-        // Write Media Packets to the recognize stream
-        recognizeStream.write(msg.media.payload);
+        if (isFirst) {
+          recognizeStream.write(initialRequest);
+          isFirst = false;
+        }
+        const request = {
+          streamingConfig: config,
+          audioContent: msg.media.payload.toString('base64'),
+        };
+        recognizeStream.write(request);
         break;
       case "stop":
         console.log(`Call Has Ended`);
@@ -65,23 +102,7 @@ wss.on("connection", function connection(ws) {
   });
 });
 
-app.use(express.static("public"));
-
-app.get("/", (req, res) => res.sendFile(path.join(__dirname, "/index.html")));
-
-app.post("/", (req, res) => {
-  res.set("Content-Type", "text/xml");
-
-  res.send(`
-    <Response>
-      <Start>
-        <Stream url="wss://${req.headers.host}/"/>
-      </Start>
-      <Say>I will stream the next 60 seconds of audio through your websocket</Say>
-      <Pause length="60" />
-    </Response>
-  `);
-});
+// app.use(express.static("public"));
 
 console.log("Listening on Port 8080");
 server.listen(8080);
