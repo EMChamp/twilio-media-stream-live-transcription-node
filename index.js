@@ -4,9 +4,13 @@ const app = express();
 const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
 
+let sourceLanguage = 'en-US';
+let targetLanguage = 'ja-JP';
+
 const path = require("path");
 
 require("dotenv").config();
+const twilioClient = require('twilio')(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
 // Imports the Cloud Media Translation client library
 const {
@@ -27,9 +31,7 @@ wss.on("connection", function connection(ws) {
 
     // Setup GCP Config
     const encoding = 'mulaw';
-    const sourceLanguage = 'hi-IN';
-    const targetLanguage = 'en-US';
-    const config = {
+    let config = {
       audioConfig: {
         audioEncoding: encoding,
         sampleRateHertz: 8000,
@@ -39,7 +41,7 @@ wss.on("connection", function connection(ws) {
       singleUtterance: false,
     };
     // First request needs to have only a streaming config, no data.
-    const initialRequest = {
+    let initialRequest = {
       streamingConfig: config,
       audioContent: null,
     };
@@ -65,7 +67,7 @@ wss.on("connection", function connection(ws) {
             .on('data', response => {
               console.log("Data received");
               const {result, speechEventType} = response;
-           
+
               currentTranslation = result.textTranslationResult.translation;
               currentRecognition = result.recognitionResult;
               console.log(`\nPartial translation: ${currentTranslation}`);
@@ -74,13 +76,13 @@ wss.on("connection", function connection(ws) {
               wss.clients.forEach((client) => {
                 if (client.readyState === WebSocket.OPEN) {
                   client.send(
-                    JSON.stringify({
-                      event: "interim-transcription",
-                      text: currentTranslation,
-                    })
+                      JSON.stringify({
+                        event: "interim-transcription",
+                        text: currentTranslation,
+                      })
                   );
                 }
-              }); 
+              });
             });
         break;
       case "media":
@@ -102,7 +104,27 @@ wss.on("connection", function connection(ws) {
   });
 });
 
-// app.use(express.static("public"));
+app.get("/", (req, res) => res.sendFile(path.join(__dirname, "/index.html")));
+
+app.post("/switch", (req, res) => {
+  console.log("switch");
+  if (targetLanguage === 'ja-JP') {
+    targetLanguage = 'fr-FR'
+  } else {
+    targetLanguage = 'ja-JP'
+  }
+  console.log("switch to " + targetLanguage);
+});
+
+app.post("/startStream", (req, res) => {
+  console.log("Make call");
+  twilioClient.calls.create({
+    url: 'https://handler.twilio.com/twiml/EHeb757177c1eff9b8f146f3212fdcb127',
+    to: '+14083009148',
+    from: '+12015145264'
+  })
+      .then(call => console.log(call.sid));
+});
 
 console.log("Listening on Port 8080");
 server.listen(8080);
